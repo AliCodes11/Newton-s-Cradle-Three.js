@@ -45,10 +45,16 @@ select {
   inset: 0;
   overflow: hidden;
   background:
+    linear-gradient(135deg, rgba(255, 180, 95, 0.08) 0 1px, transparent 1px 34px),
+    linear-gradient(22deg, rgba(103, 167, 255, 0.06) 0 1px, transparent 1px 44px),
     linear-gradient(rgba(47, 228, 255, 0.05) 1px, transparent 1px),
     linear-gradient(90deg, rgba(47, 228, 255, 0.05) 1px, transparent 1px),
     #020813;
-  background-size: 42px 42px;
+  background-size:
+    120px 120px,
+    160px 160px,
+    42px 42px,
+    42px 42px;
 }
 
 #scene-canvas {
@@ -67,12 +73,16 @@ select {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(2, 8, 19, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 180, 95, 0.08), transparent 38%),
+    rgba(2, 8, 19, 0.72);
   backdrop-filter: blur(12px);
 }
 
 .config-panel {
   width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   padding: 34px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -139,7 +149,8 @@ output {
   font-weight: 800;
 }
 
-select {
+select,
+input[type="number"] {
   width: 100%;
   min-height: 46px;
   padding: 0 14px;
@@ -151,6 +162,7 @@ select {
 }
 
 select:focus-visible,
+input[type="number"]:focus-visible,
 input[type="range"]:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--cyan);
@@ -158,7 +170,8 @@ button:focus-visible {
 }
 
 .start-button,
-.reset-button {
+.reset-button,
+.panel-toggle-button {
   border: 0;
   border-radius: 6px;
   cursor: pointer;
@@ -179,9 +192,20 @@ button:focus-visible {
 }
 
 .start-button:hover,
-.reset-button:hover {
+.reset-button:hover,
+.panel-toggle-button:hover {
   background: var(--button-hover);
   transform: translateY(-1px);
+}
+
+.panel-toggle-button {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  z-index: 3;
+  min-height: 38px;
+  padding: 0 14px;
+  box-shadow: 0 12px 28px rgba(47, 228, 255, 0.14);
 }
 
 .experiment-panel {
@@ -189,10 +213,11 @@ button:focus-visible {
   top: 18px;
   left: 18px;
   z-index: 3;
-  width: min(310px, calc(100vw - 36px));
+  width: min(520px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
+  overflow-y: auto;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -201,7 +226,13 @@ button:focus-visible {
   backdrop-filter: blur(12px);
 }
 
-.experiment-panel div {
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.panel-metric {
   min-width: 0;
   padding: 10px;
   border: 1px solid rgba(151, 220, 238, 0.13);
@@ -225,8 +256,66 @@ button:focus-visible {
   font-size: 1rem;
 }
 
-.reset-button {
+.parameter-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.compact-field {
+  margin-top: 0;
+}
+
+.compact-field:first-child,
+.compact-field:last-child {
   grid-column: 1 / -1;
+}
+
+.ball-credential-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ball-credential-row {
+  display: grid;
+  grid-template-columns: 58px repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+  padding: 9px;
+  border: 1px solid rgba(151, 220, 238, 0.13);
+  border-radius: 6px;
+  background: rgba(2, 8, 19, 0.34);
+}
+
+.ball-row-label {
+  align-self: center;
+  color: var(--cyan);
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.micro-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.micro-field span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.micro-field input[type="number"] {
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.84rem;
+}
+
+.reset-button {
   min-height: 38px;
 }
 
@@ -253,5 +342,28 @@ button:focus-visible {
     top: 12px;
     left: 12px;
     width: calc(100vw - 24px);
+    max-height: calc(100vh - 84px);
+  }
+
+  .panel-toggle-button {
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .parameter-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .compact-field {
+    grid-column: 1 / -1;
+  }
+
+  .ball-credential-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .ball-row-label {
+    grid-column: 1 / -1;
   }
 }

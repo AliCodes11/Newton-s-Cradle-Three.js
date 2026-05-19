@@ -1,19 +1,14 @@
 import './style.css';
+import { DEFAULT_CONFIG, normalizeExperimentConfig } from './config.js';
 import { createLabScene } from './cradle.js';
 import { createLabUi } from './ui.js';
 
-const defaultConfig = {
-  ballCount: 5,
-  weight: 'Medium',
-  materialType: 'Plastic',
-};
-
-let experimentConfig = { ...defaultConfig };
+let experimentConfig = normalizeExperimentConfig(DEFAULT_CONFIG);
 let labScene = null;
 let labUi = null;
 
 export function startExperiment(config) {
-  experimentConfig = { ...config };
+  experimentConfig = normalizeExperimentConfig(config);
 
   if (!labScene) {
     labScene = createLabScene({
@@ -30,8 +25,16 @@ export function startExperiment(config) {
   // Initialize your simulation state here using experimentConfig.
 }
 
+export function updateExperimentConfig(config) {
+  experimentConfig = normalizeExperimentConfig(config);
+  labScene?.updateCradleConfig(experimentConfig);
+
+  // Physics connection point:
+  // Sync changed radii, thread lengths, ball masses, and gravity here.
+}
+
 export function resetExperiment() {
-  experimentConfig = { ...defaultConfig };
+  experimentConfig = normalizeExperimentConfig(DEFAULT_CONFIG);
   labScene?.resetExperiment();
   labUi.showConfiguration(experimentConfig);
 
@@ -40,9 +43,10 @@ export function resetExperiment() {
 }
 
 labUi = createLabUi({
-  defaultConfig,
+  defaultConfig: DEFAULT_CONFIG,
   onStart: startExperiment,
+  onUpdate: updateExperimentConfig,
   onReset: resetExperiment,
 });
 
-labUi.showConfiguration(defaultConfig);
+labUi.showConfiguration(experimentConfig);

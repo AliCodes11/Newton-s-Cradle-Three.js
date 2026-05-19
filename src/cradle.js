@@ -1,11 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { normalizeExperimentConfig } from './config.js';
 
-const BALL_RADIUS = 0.42;
-const BALL_DIAMETER = BALL_RADIUS * 2;
 const FIXED_TIME_STEP = 1 / 120;
 const MAX_STEPS_PER_FRAME = 8;
-const GRAVITY = 9.82;
 const DRAG_ANGLE_LIMIT = 0.95;
 const MAX_SWING_ANGLE = 1.18;
 const ANGULAR_DAMPING = 0.018;
@@ -14,18 +12,14 @@ const CONTACT_SLOP = 0.012;
 const MIN_IMPACT_SPEED = 0.035;
 const SELECTED_EMISSIVE = 0x064a57;
 const DRAGGING_EMISSIVE = 0x0a5060;
+const RESTING_BALL_GAP = 0.015;
+const FRAME_MARGIN = 0.8;
 
 const pointer = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const dragPoint = new THREE.Vector3();
 const upAxis = new THREE.Vector3(0, 1, 0);
-
-const weightMassMap = {
-  Light: 0.65,
-  Medium: 1.15,
-  Heavy: 1.85,
-};
 
 export function updateMaterial(materialType) {
   const materialName = materialType.toLowerCase();
@@ -59,8 +53,8 @@ export function updateMaterial(materialType) {
   });
 }
 
-export function createBall(materialType, weight) {
-  const geometry = new THREE.SphereGeometry(BALL_RADIUS, 48, 32);
+export function createBall(materialType, radius, mass) {
+  const geometry = new THREE.SphereGeometry(radius, 56, 36);
   const material = updateMaterial(materialType);
   const ball = new THREE.Mesh(geometry, material);
 
@@ -68,15 +62,17 @@ export function createBall(materialType, weight) {
   ball.receiveShadow = true;
   ball.userData = {
     materialType,
-    weight,
+    radius,
+    mass,
     isCradleBall: true,
   };
 
   return ball;
 }
 
-export function createString(startPoint, endPoint) {
-  const geometry = new THREE.CylinderGeometry(0.012, 0.012, 1, 12);
+export function createString(startPoint, endPoint, ballRadius) {
+  const stringRadius = THREE.MathUtils.clamp(ballRadius * 0.035, 0.012, 0.028);
+  const geometry = new THREE.CylinderGeometry(stringRadius, stringRadius, 1, 12);
   const material = new THREE.MeshStandardMaterial({
     color: 0xb7f8ff,
     roughness: 0.3,
@@ -238,10 +234,12 @@ export function createLabScene({ canvas, onStatusChange }) {
   const controls = new OrbitControls(camera, renderer.domElement);
 
   let cradleGroup = null;
+  let cradleDimensions = null;
   let animationFrameId = null;
   let primaryDragBall = null;
   let lastFrameTime = 0;
   let accumulatedTime = 0;
+  let gravityAcceleration = 9.82;
   const ballRecords = [];
   const draggableMeshes = [];
   const selectedBalls = new Set();
@@ -267,17 +265,19 @@ export function createLabScene({ canvas, onStatusChange }) {
   createLaboratoryBase(scene);
 
   function createCradle(config) {
-    clearCradle();
+    const normalizedConfig = normalizeExperimentConfig(config);
 
-    const dimensions = getCradleDimensions(config.ballCount);
+    clearCradle();
+    gravityAcceleration = normalizedConfig.gravityAcceleration;
+
+    const dimensions = getCradleDimensions(normalizedConfig);
+    cradleDimensions = dimensions;
     cradleGroup = new THREE.Group();
     cradleGroup.add(createFrame(dimensions));
 
-    const firstBallX = -((config.ballCount - 1) * dimensions.ballSpacing) / 2;
-
-    for (let index = 0; index < config.ballCount; index += 1) {
-      const baseX = firstBallX + index * dimensions.ballSpacing;
-      const ballRecord = createBallAssembly(config, dimensions, baseX, index);
+    for (let index = 0; index < normalizedConfig.ballCount; index += 1) {
+      const baseX = dimensions.ballCenters[index];
+      const ballRecord = createBallAssembly(normalizedConfig, dimensions, baseX, index);
 
       cradleGroup.add(ballRecord.leftString, ballRecord.rightString, ballRecord.mesh);
       ballRecords.push(ballRecord);
@@ -292,24 +292,29 @@ export function createLabScene({ canvas, onStatusChange }) {
   }
 
   function createBallAssembly(config, dimensions, baseX, index) {
-    const mass = weightMassMap[config.weight] ?? weightMassMap.Medium;
+    const ballConfig = config.balls[index];
+    const mass = ballConfig.mass;
+    const radius = ballConfig.radius;
+    const stringLength = ballConfig.stringLength;
+    const stringSpread = getStringSpread(radius);
     const centerAnchor = new THREE.Vector3(baseX, dimensions.topY, 0);
-    const leftAnchor = new THREE.Vector3(baseX - dimensions.stringSpread, dimensions.topY, 0);
-    const rightAnchor = new THREE.Vector3(baseX + dimensions.stringSpread, dimensions.topY, 0);
-    const ballStart = getPendulumPosition(centerAnchor, dimensions.stringLength, 0);
-    const mesh = createBall(config.materialType, config.weight);
-    const leftString = createString(leftAnchor, ballStart);
-    const rightString = createString(rightAnchor, ballStart);
+    const leftAnchor = new THREE.Vector3(baseX - stringSpread, dimensions.topY, 0);
+    const rightAnchor = new THREE.Vector3(baseX + stringSpread, dimensions.topY, 0);
+    const ballStart = getPendulumPosition(centerAnchor, stringLength, 0);
+    const mesh = createBall(config.materialType, radius, mass);
+    const leftString = createString(leftAnchor, ballStart, radius);
+    const rightString = createString(rightAnchor, ballStart, radius);
     const ballRecord = {
       index,
       mass,
+      radius,
       mesh,
       leftString,
       rightString,
       leftAnchor,
       rightAnchor,
       centerAnchor,
-      stringLength: dimensions.stringLength,
+      stringLength,
       angle: 0,
       angularVelocity: 0,
       isDragging: false,
@@ -343,18 +348,22 @@ export function createLabScene({ canvas, onStatusChange }) {
     exposeDebugState();
 
     if (!cradleGroup) {
+      cradleDimensions = null;
       return;
     }
 
     scene.remove(cradleGroup);
     disposeObject(cradleGroup);
     cradleGroup = null;
+    cradleDimensions = null;
   }
 
   function focusCameraOnCradle(dimensions) {
-    const distance = Math.max(8.2, dimensions.width * 1.12);
-    camera.position.set(0, 3.2, distance);
-    controls.target.set(0, 1.35, 0);
+    const targetY = dimensions.topY * 0.46;
+    const distance = Math.max(8.2, dimensions.width * 0.72, dimensions.topY * 2.05);
+
+    camera.position.set(0, targetY + 1.45, distance);
+    controls.target.set(0, targetY, 0);
     controls.update();
   }
 
@@ -403,7 +412,7 @@ export function createLabScene({ canvas, onStatusChange }) {
       }
 
       const angularAcceleration =
-        -(GRAVITY / ball.stringLength) * Math.sin(ball.angle) -
+        -(gravityAcceleration / ball.stringLength) * Math.sin(ball.angle) -
         ANGULAR_DAMPING * ball.angularVelocity;
 
       ball.angularVelocity += angularAcceleration * deltaSeconds;
@@ -441,8 +450,9 @@ export function createLabScene({ canvas, onStatusChange }) {
     const dx = rightPosition.x - leftPosition.x;
     const dy = rightPosition.y - leftPosition.y;
     const distance = Math.hypot(dx, dy);
+    const contactDistance = leftBall.radius + rightBall.radius;
 
-    if (distance <= 0 || distance > BALL_DIAMETER + CONTACT_SLOP) {
+    if (distance <= 0 || distance > contactDistance + CONTACT_SLOP) {
       return;
     }
 
@@ -456,7 +466,14 @@ export function createLabScene({ canvas, onStatusChange }) {
       (leftVelocity.x - rightVelocity.x) * normal.x +
       (leftVelocity.y - rightVelocity.y) * normal.y;
 
-    separateOverlappingPair(leftBall, rightBall, distance, leftPosition, rightPosition);
+    separateOverlappingPair(
+      leftBall,
+      rightBall,
+      distance,
+      contactDistance,
+      leftPosition,
+      rightPosition,
+    );
 
     if (relativeNormalVelocity <= MIN_IMPACT_SPEED) {
       return;
@@ -478,8 +495,15 @@ export function createLabScene({ canvas, onStatusChange }) {
     setNormalVelocity(rightBall, normal, nextRightNormalVelocity);
   }
 
-  function separateOverlappingPair(leftBall, rightBall, distance, leftPosition, rightPosition) {
-    const overlap = BALL_DIAMETER - distance;
+  function separateOverlappingPair(
+    leftBall,
+    rightBall,
+    distance,
+    contactDistance,
+    leftPosition,
+    rightPosition,
+  ) {
+    const overlap = contactDistance - distance;
 
     if (overlap <= 0.0005) {
       return;
@@ -505,12 +529,12 @@ export function createLabScene({ canvas, onStatusChange }) {
       updateStringBetweenPoints(
         ballRecord.leftString,
         ballRecord.leftAnchor,
-        getBallStringPoint(position, ballRecord.leftAnchor),
+        getBallStringPoint(position, ballRecord.leftAnchor, ballRecord.radius),
       );
       updateStringBetweenPoints(
         ballRecord.rightString,
         ballRecord.rightAnchor,
-        getBallStringPoint(position, ballRecord.rightAnchor),
+        getBallStringPoint(position, ballRecord.rightAnchor, ballRecord.radius),
       );
     }
   }
@@ -722,6 +746,7 @@ export function createLabScene({ canvas, onStatusChange }) {
     }
 
     window.__newtonsCradleDebug = {
+      getGravity: () => gravityAcceleration,
       getBalls: () =>
         ballRecords.map((ball) => {
           const position = getCurrentPosition(ball);
@@ -731,10 +756,14 @@ export function createLabScene({ canvas, onStatusChange }) {
             angle: ball.angle,
             angularVelocity: ball.angularVelocity,
             isSelected: ball.isSelected,
+            mass: ball.mass,
+            radius: ball.radius,
+            stringLength: ball.stringLength,
             x: position.x,
             y: position.y,
           };
         }),
+      getCarrier: () => ({ ...cradleDimensions }),
       getScreenBalls: () =>
         ballRecords.map((ball) => {
           const position = getCurrentPosition(ball).project(camera);
@@ -780,6 +809,7 @@ export function createLabScene({ canvas, onStatusChange }) {
     animate,
     createCradle,
     resetExperiment,
+    updateCradleConfig: createCradle,
     updateMaterial,
   };
 }
@@ -789,6 +819,7 @@ function createLights(scene) {
   const keyLight = new THREE.DirectionalLight(0xd8f8ff, 2.1);
   const rimLight = new THREE.PointLight(0x20d7ee, 35, 18);
   const fillLight = new THREE.PointLight(0x6c8dff, 12, 12);
+  const warmBenchLight = new THREE.PointLight(0xffb45f, 18, 18);
 
   keyLight.position.set(-3.5, 7, 4.5);
   keyLight.castShadow = true;
@@ -797,13 +828,14 @@ function createLights(scene) {
 
   rimLight.position.set(4.5, 3.2, -3.6);
   fillLight.position.set(-4, 2.4, 5);
+  warmBenchLight.position.set(-5.5, 1.2, -4.2);
 
-  scene.add(ambientLight, keyLight, rimLight, fillLight);
+  scene.add(ambientLight, keyLight, rimLight, fillLight, warmBenchLight);
 }
 
 function createLaboratoryBase(scene) {
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(18, 12),
+    new THREE.PlaneGeometry(48, 24),
     new THREE.MeshStandardMaterial({
       color: 0x07111a,
       roughness: 0.82,
@@ -814,7 +846,7 @@ function createLaboratoryBase(scene) {
   floor.receiveShadow = true;
   scene.add(floor);
 
-  const grid = new THREE.GridHelper(16, 32, 0x2fe4ff, 0x183545);
+  const grid = new THREE.GridHelper(46, 46, 0x2fe4ff, 0x183545);
   grid.position.y = 0.012;
 
   for (const material of normalizeMaterials(grid.material)) {
@@ -823,18 +855,212 @@ function createLaboratoryBase(scene) {
   }
 
   scene.add(grid);
+  createLaboratoryBackdrop(scene);
+  createFloorInlays(scene);
 }
 
-function getCradleDimensions(ballCount) {
+function createLaboratoryBackdrop(scene) {
+  const backdrop = new THREE.Group();
+  const wallMaterial = new THREE.MeshStandardMaterial({
+    color: 0x071421,
+    roughness: 0.9,
+    metalness: 0.06,
+  });
+  const panelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x0b2432,
+    roughness: 0.78,
+    metalness: 0.12,
+    transparent: true,
+    opacity: 0.72,
+  });
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: 0x2fe4ff,
+    transparent: true,
+    opacity: 0.24,
+  });
+  const warmLineMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffad55,
+    roughness: 0.42,
+    metalness: 0.25,
+    emissive: 0x5c2604,
+    emissiveIntensity: 0.35,
+    transparent: true,
+    opacity: 0.68,
+  });
+
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(52, 15), wallMaterial);
+  wall.position.set(0, 6.2, -6.3);
+  wall.receiveShadow = true;
+  backdrop.add(wall);
+
+  for (const x of [-18, -9, 0, 9, 18]) {
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(7.4, 7.8), panelMaterial);
+    panel.position.set(x, 5.4, -6.24);
+    backdrop.add(panel);
+    backdrop.add(createPanelOutline(x, 5.4, -6.2, 7.4, 7.8, lineMaterial));
+  }
+
+  for (const y of [1.45, 3.4, 5.35, 7.3, 9.25]) {
+    const guide = createLine(
+      [
+        new THREE.Vector3(-24, y, -6.18),
+        new THREE.Vector3(24, y, -6.18),
+      ],
+      lineMaterial,
+    );
+    backdrop.add(guide);
+  }
+
+  const benchLight = new THREE.Mesh(new THREE.PlaneGeometry(44, 0.08), warmLineMaterial);
+  benchLight.position.set(0, 0.72, -6.12);
+  backdrop.add(benchLight);
+
+  const topRail = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 44, 18),
+    warmLineMaterial,
+  );
+  topRail.rotation.z = Math.PI / 2;
+  topRail.position.set(0, 9.7, -6.05);
+  backdrop.add(topRail);
+
+  addMeasurementScale(backdrop);
+  scene.add(backdrop);
+}
+
+function createPanelOutline(x, y, z, width, height, material) {
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+
+  return createLine(
+    [
+      new THREE.Vector3(x - halfWidth, y - halfHeight, z),
+      new THREE.Vector3(x + halfWidth, y - halfHeight, z),
+      new THREE.Vector3(x + halfWidth, y + halfHeight, z),
+      new THREE.Vector3(x - halfWidth, y + halfHeight, z),
+      new THREE.Vector3(x - halfWidth, y - halfHeight, z),
+    ],
+    material,
+  );
+}
+
+function addMeasurementScale(group) {
+  const scaleMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb7f8ff,
+    roughness: 0.28,
+    metalness: 0.48,
+    emissive: 0x082c34,
+    emissiveIntensity: 0.22,
+  });
+  const majorTickMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffc072,
+    roughness: 0.36,
+    metalness: 0.24,
+    emissive: 0x4a2203,
+    emissiveIntensity: 0.28,
+  });
+
+  const x = -10.8;
+  const z = -6.02;
+  const scaleBar = new THREE.Mesh(new THREE.BoxGeometry(0.035, 8.2, 0.035), scaleMaterial);
+  scaleBar.position.set(x, 4.7, z);
+  group.add(scaleBar);
+
+  for (let index = 0; index <= 16; index += 1) {
+    const isMajor = index % 2 === 0;
+    const tick = new THREE.Mesh(
+      new THREE.BoxGeometry(isMajor ? 0.58 : 0.32, 0.025, 0.03),
+      isMajor ? majorTickMaterial : scaleMaterial,
+    );
+    tick.position.set(x + (isMajor ? 0.29 : 0.16), 0.6 + index * 0.5, z);
+    group.add(tick);
+  }
+}
+
+function createFloorInlays(scene) {
+  const railMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffb45f,
+    roughness: 0.38,
+    metalness: 0.35,
+    emissive: 0x462003,
+    emissiveIntensity: 0.25,
+    transparent: true,
+    opacity: 0.74,
+  });
+  const blueRailMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2fe4ff,
+    roughness: 0.34,
+    metalness: 0.32,
+    emissive: 0x042b33,
+    emissiveIntensity: 0.2,
+    transparent: true,
+    opacity: 0.5,
+  });
+
+  for (const x of [-6.2, 6.2]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.015, 18), railMaterial);
+    rail.position.set(x, 0.026, -0.6);
+    scene.add(rail);
+  }
+
+  for (const z of [-4.5, -1.5, 1.5, 4.5]) {
+    const crossRail = new THREE.Mesh(new THREE.BoxGeometry(16, 0.012, 0.035), blueRailMaterial);
+    crossRail.position.set(0, 0.028, z);
+    scene.add(crossRail);
+  }
+}
+
+function createLine(points, material) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+  return new THREE.Line(geometry, material);
+}
+
+function getCradleDimensions(config) {
+  const layout = getRestingBallLayout(config.balls);
+  const maxRadius = Math.max(...config.balls.map((ball) => ball.radius));
+  const maxSwingReach = Math.max(
+    ...config.balls.map((ball) => ball.stringLength * Math.sin(MAX_SWING_ANGLE) + ball.radius),
+  );
+  const deepestRestDrop = Math.max(
+    ...config.balls.map((ball) => ball.stringLength + ball.radius),
+  );
+  const envelopeWidth =
+    layout.maxCenterX - layout.minCenterX + maxSwingReach * 2 + FRAME_MARGIN;
+  const depth = Math.max(1.25, maxRadius * 3.25 + 0.55);
+  const baseY = 0.08;
+
   return {
-    width: Math.max(5, ballCount * BALL_DIAMETER + 1.7),
-    depth: 1.25,
-    topY: 3.05,
-    baseY: 0.08,
-    stringLength: 2.12,
-    stringSpread: 0.18,
-    ballSpacing: BALL_DIAMETER,
+    width: Math.max(5, envelopeWidth),
+    depth,
+    topY: Math.max(3.05, baseY + deepestRestDrop + 0.36),
+    baseY,
+    ballCenters: layout.centers,
   };
+}
+
+function getRestingBallLayout(balls) {
+  const totalSpan =
+    balls.reduce((sum, ball) => sum + ball.radius * 2, 0) +
+    Math.max(0, balls.length - 1) * RESTING_BALL_GAP;
+  const centers = [];
+  let cursor = -totalSpan / 2;
+
+  for (const ball of balls) {
+    cursor += ball.radius;
+    centers.push(cursor);
+    cursor += ball.radius + RESTING_BALL_GAP;
+  }
+
+  return {
+    centers,
+    minCenterX: centers[0] ?? 0,
+    maxCenterX: centers[centers.length - 1] ?? 0,
+    totalSpan,
+  };
+}
+
+function getStringSpread(radius) {
+  return THREE.MathUtils.clamp(radius * 0.48, 0.16, 0.68);
 }
 
 function getCurrentPosition(ball) {
@@ -887,9 +1113,9 @@ function setBallX(ball, nextX) {
   ball.angle = Math.asin(normalizedX);
 }
 
-function getBallStringPoint(ballPosition, anchorPoint) {
+function getBallStringPoint(ballPosition, anchorPoint, radius) {
   const directionToAnchor = anchorPoint.clone().sub(ballPosition).normalize();
-  return ballPosition.clone().add(directionToAnchor.multiplyScalar(BALL_RADIUS * 0.92));
+  return ballPosition.clone().add(directionToAnchor.multiplyScalar(radius * 0.92));
 }
 
 function updateStringBetweenPoints(stringMesh, startPoint, endPoint) {
